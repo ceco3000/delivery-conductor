@@ -1,0 +1,21 @@
+{
+  "name": "delivery-conductor",
+  "interface": {
+    "displayName": "Delivery Conductor"
+  },
+  "plugins": [
+    {
+      "name": "delivery-conductor",
+      "version": "0.4.2",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

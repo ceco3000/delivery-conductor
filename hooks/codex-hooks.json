@@ -1,0 +1,44 @@
+{
+  "description": "Delivery Conductor triggers on the Chinese entry phrase and reminds the agent about the current gate at session start.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'python3 \"${PLUGIN_ROOT:-.}/scripts/hook_user_prompt.py\" 2>/dev/null || true'"
+          }
+        ],
+        "description": "Route a 编码总控 message and inject the mandatory conductor workflow",
+        "id": "prompt:entry"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-.}/scripts/guard_tool.py\""
+          }
+        ],
+        "description": "Deny file edits and unclassified commands while a human approval gate is pending",
+        "id": "pretool:approval-gate"
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'python3 \"${PLUGIN_ROOT:-.}/scripts/hook_session_start.py\" 2>/dev/null || true'"
+          }
+        ],
+        "description": "Report the current delivery phase and next required gate",
+        "id": "session:start"
+      }
+    ]
+  }
+}

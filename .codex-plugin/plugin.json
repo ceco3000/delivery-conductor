@@ -1,0 +1,40 @@
+{
+  "name": "delivery-conductor",
+  "version": "0.4.2",
+  "description": "Cross-platform conductor for OpenSpec + UI UX Pro Max + Superpowers + ECC delivery, with explicit terminal-token approval gates and fail-closed tool blocking on macOS and Linux.",
+  "author": {
+    "name": "ceco3000"
+  },
+  "keywords": [
+    "codex",
+    "openspec",
+    "superpowers",
+    "ecc",
+    "ui-ux-pro-max",
+    "编码总控",
+    "workflow",
+    "gates",
+    "verification",
+    "human-approval"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "Delivery Conductor",
+    "shortDescription": "Route and gate four-layer delivery work",
+    "longDescription": "Delivery Conductor routes T0-T3 work across OpenSpec, UI UX Pro Max, Superpowers, and ECC on macOS and Linux. It records phase state and evidence outside model memory, pauses at specification, UI design, plan, and final delivery approval gates, and blocks mutations while a human decision is pending. Approval is terminal-only on every platform: run approve.py in an interactive TTY and enter 批准 <token>; missing TTY fails closed.",
+    "developerName": "ceco3000",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "编码总控 实现一个登录页",
+      "Use delivery-conductor for this task.",
+      "Route this change through OpenSpec, Superpowers, ECC, and UI UX Pro Max.",
+      "Check the delivery gates before claiming completion."
+    ]
+  }
+}
