@@ -19,7 +19,7 @@ from host_trust import (
     enforce_host_trust,
     plugin_is_installed_copy,
 )
-from conductor.runtime import hook_interpreter
+from conductor.runtime import configure_stdio, hook_interpreter
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -180,6 +180,7 @@ def collect_checks() -> list[Check]:
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="诊断编码总控插件的跨平台运行环境。")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--strict", action="store_true", help="把警告视为失败")

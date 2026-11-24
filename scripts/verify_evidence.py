@@ -10,9 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from conductor.gates import evaluate_all, next_gate
 from conductor.model import GATE_ORDER, load_state
+from conductor.runtime import configure_stdio
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Verify that all required evidence exists and passes.")
     parser.add_argument("--state", default=".codex/delivery-state.json")
     parser.add_argument("--base-dir", default=".")

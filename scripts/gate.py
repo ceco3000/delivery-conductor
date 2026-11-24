@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from conductor.gates import advance_state, evaluate_all, evaluate_gate, next_gate
 from conductor.model import GATE_ORDER, load_state, save_state
+from conductor.runtime import configure_stdio
 from host_trust import HostTrustError, enforce_host_trust
 
 
@@ -26,6 +27,7 @@ def print_human(results: dict[str, dict[str, object]], state: dict[str, object])
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Evaluate delivery-conductor gates.")
     parser.add_argument("--state", default=".codex/delivery-state.json")
     parser.add_argument("--gate", choices=GATE_ORDER)

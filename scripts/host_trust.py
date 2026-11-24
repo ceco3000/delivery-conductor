@@ -12,7 +12,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from conductor.runtime import is_windows, relative_name_bytes
+from conductor.runtime import configure_stdio, is_windows, relative_name_bytes
 
 try:
     import tomllib as _toml
@@ -352,6 +352,7 @@ def format_report(report: dict[str, Any]) -> str:
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Verify that Codex trusts the installed Delivery Conductor hooks.")
     parser.add_argument("--plugin-root")
     parser.add_argument("--config")

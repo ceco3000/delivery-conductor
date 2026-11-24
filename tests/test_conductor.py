@@ -278,7 +278,7 @@ def run_prompt_hook(prompt: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         [sys.executable, str(SCRIPTS / "hook_user_prompt.py")],
         input=json.dumps(payload, ensure_ascii=False),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         check=False,
         env=environment,
     )
@@ -299,7 +299,7 @@ def run_hook(
         [sys.executable, str(SCRIPTS / script)],
         input=json.dumps(payload, ensure_ascii=False),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         check=False,
         env=environment,
         cwd=cwd,
@@ -321,7 +321,7 @@ def run_manifest_hook(event: str, payload: dict, cwd: Path) -> subprocess.Comple
         argv,
         input=json.dumps(payload, ensure_ascii=False),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         check=False,
         cwd=cwd,
         env=environment,
@@ -707,7 +707,7 @@ class ConductorTests(unittest.TestCase):
                     '{"approved": true}',
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0)
@@ -722,7 +722,7 @@ class ConductorTests(unittest.TestCase):
                 '{"kind": "approval", "command": "echo ok", "result": "passed", "exit_code": 0}',
             ],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             check=False,
         )
         self.assertNotEqual(result.returncode, 0)
@@ -940,7 +940,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 stdin=subprocess.DEVNULL,
                 env=dict(os.environ),
                 check=False,
@@ -1237,7 +1237,7 @@ class ConductorTests(unittest.TestCase):
             [sys.executable, str(SCRIPTS / "simulate.py")],
             cwd=str(PLUGIN_ROOT),
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
@@ -1262,7 +1262,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(route.returncode, 0, route.stdout + route.stderr)
@@ -1270,7 +1270,7 @@ class ConductorTests(unittest.TestCase):
             before = subprocess.run(
                 [sys.executable, str(SCRIPTS / "gate.py"), "--state", str(state), "--base-dir", str(base)],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(before.returncode, 1, before.stdout + before.stderr)
@@ -1296,7 +1296,7 @@ class ConductorTests(unittest.TestCase):
                     json.dumps({"paths": paths}),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(record.returncode, 0, record.stdout + record.stderr)
@@ -1313,7 +1313,7 @@ class ConductorTests(unittest.TestCase):
                     "spec_ready",
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
@@ -1335,7 +1335,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
@@ -1366,7 +1366,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
@@ -1393,7 +1393,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
@@ -1498,7 +1498,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(provisional.returncode, 0, provisional.stdout + provisional.stderr)
@@ -1529,7 +1529,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
@@ -1588,7 +1588,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
@@ -1642,7 +1642,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertNotEqual(low_confidence.returncode, 0)
@@ -1663,7 +1663,7 @@ class ConductorTests(unittest.TestCase):
                     str(base),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertNotEqual(conflict.returncode, 0)
@@ -2586,7 +2586,7 @@ class InstallScriptTests(unittest.TestCase):
                 [sys.executable, str(SCRIPTS / "install.py"), "--target", str(target)],
                 cwd=str(PLUGIN_ROOT),
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
@@ -2604,7 +2604,7 @@ class InstallScriptTests(unittest.TestCase):
                 [sys.executable, str(SCRIPTS / "install.py"), "--target", str(target)],
                 cwd=str(PLUGIN_ROOT),
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 check=False,
             )
             self.assertNotEqual(completed.returncode, 0)
@@ -2642,7 +2642,7 @@ class DoctorTests(unittest.TestCase):
             [sys.executable, str(SCRIPTS / "doctor.py"), *args],
             cwd=str(PLUGIN_ROOT),
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             stdin=subprocess.DEVNULL,
             check=False,
             env=env,
@@ -2850,7 +2850,7 @@ class HostTrustCliTests(unittest.TestCase):
             [sys.executable, str(SCRIPTS / script), *args],
             cwd=str(cwd),
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             check=False,
             env=environment,
         )

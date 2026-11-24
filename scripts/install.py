@@ -6,6 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from conductor.runtime import configure_stdio
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 IGNORED = shutil.ignore_patterns("__pycache__", "*.pyc", ".git", ".venv")
@@ -26,6 +30,7 @@ def install(source: Path, target: Path) -> None:
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Install Delivery Conductor on macOS, Linux, or Windows.")
     parser.add_argument("--target", type=Path, default=Path.home() / "delivery-conductor")
     args = parser.parse_args()

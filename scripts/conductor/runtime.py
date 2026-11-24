@@ -5,10 +5,24 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 
 CONTROL_PATTERN = re.compile(r"%[^%\r\n]+%")
+
+
+def configure_stdio() -> None:
+    """Use UTF-8 for CLI and hook output, including legacy Windows consoles."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            continue
 
 
 def is_windows(platform: str | None = None) -> bool:

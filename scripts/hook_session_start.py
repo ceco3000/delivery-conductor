@@ -8,6 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from conductor.runtime import configure_stdio
+
 
 def emit_additional_context(message: str) -> None:
     print(
@@ -24,6 +26,7 @@ def emit_additional_context(message: str) -> None:
 
 
 def main() -> int:
+    configure_stdio()
     try:
         from conductor.gates import next_gate
         from conductor.model import load_state

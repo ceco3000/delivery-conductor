@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from route import ENTRY_PHRASE, strip_entry_phrase
-from conductor.runtime import hook_interpreter, quote_argv
+from conductor.runtime import configure_stdio, hook_interpreter, quote_argv
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -139,6 +139,7 @@ Requirement: {requirement}
 
 
 def main() -> int:
+    configure_stdio()
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, OSError):

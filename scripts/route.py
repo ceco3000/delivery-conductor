@@ -21,6 +21,7 @@ from conductor.model import (
     save_state,
     set_phase,
 )
+from conductor.runtime import configure_stdio
 
 FLAG_KEYS = (
     "trivial",
@@ -194,6 +195,7 @@ def _apply_assessment(state: dict, payload: str, base_dir: Path) -> dict:
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Route a task through the four-layer delivery protocol.")
     parser.add_argument("--task", help="Short task description")
     parser.add_argument("--tier", choices=["T0", "T1", "T2", "T3"])

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from approve import approve_gate
 from conductor.gates import advance_state
 from conductor.model import append_evidence, build_state, component_line, components_for, save_state
+from conductor.runtime import configure_stdio
 
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -49,6 +50,7 @@ def simulate_approval(state: dict, gate: str, base_dir: Path) -> None:
 
 
 def main() -> int:
+    configure_stdio()
     with tempfile.TemporaryDirectory(prefix="delivery-conductor-sim-") as temporary:
         base_dir = Path(temporary)
         state_path = base_dir / ".codex/delivery-state.json"

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from conductor.gates import evaluate_gate, next_human_approval_gate
 from conductor.model import load_state
-from conductor.runtime import has_shell_control, program_name, split_command
+from conductor.runtime import configure_stdio, has_shell_control, program_name, split_command
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 HANDSHAKE = {"approve.py", "gate.py", "record.py", "verify_evidence.py", "host_trust.py"}
@@ -1105,6 +1105,7 @@ def pre_implementation_tool_allowed(tool: str, lowered: str, tool_input: dict, b
 
 
 def main() -> int:
+    configure_stdio()
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, OSError):

@@ -10,9 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from conductor.evidence import EVIDENCE_KINDS, validate_evidence
 from conductor.model import append_evidence, load_state, save_state
+from conductor.runtime import configure_stdio
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Record delivery evidence into the conductor state file.")
     parser.add_argument("--state", default=".codex/delivery-state.json")
     parser.add_argument("--kind", required=True, choices=EVIDENCE_KINDS)

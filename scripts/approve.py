@@ -19,6 +19,7 @@ from conductor.gates import (
     gate_is_required,
 )
 from conductor.model import GATE_ORDER, load_state, now_iso, save_state
+from conductor.runtime import configure_stdio
 from host_trust import HostTrustError, enforce_host_trust
 
 Confirm = Callable[[str, str], tuple[bool, str]]
@@ -98,6 +99,7 @@ def approve_gate(
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Request explicit human approval for a conductor gate.")
     parser.add_argument("--gate", required=True, choices=APPROVAL_GATES)
     parser.add_argument("--state", default=".codex/delivery-state.json")
