@@ -1,0 +1,6 @@
+schema: spec-driven
+context: |
+  Delivery Conductor 是一个 Codex 插件，用 Python 管理交付阶段、人工审批门禁、
+  证据和一致性审计。当前只支持 macOS/Linux；目标是在不复制业务实现的前提下，
+  让同一套插件在 macOS、Linux 和原生 Windows 上运行。官方文档站点不可访问时，
+  以 openai/codex GitHub 仓库中的运行时代码和测试作为 Hook 契约依据。

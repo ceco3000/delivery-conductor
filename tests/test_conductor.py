@@ -16,6 +16,7 @@ SCRIPTS = PLUGIN_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import approve as approve_module
+import install as install_module
 from approve import PrerequisiteError, approve_gate, confirm_with_user
 from conductor.evidence import validate_evidence
 from conductor.gates import (
@@ -34,6 +35,14 @@ from conductor.model import (
     load_state,
     save_state,
 )
+from conductor.runtime import (
+    has_shell_control,
+    hook_interpreter,
+    program_name,
+    quote_argv,
+    relative_name_bytes,
+    split_command,
+)
 from host_trust import (
     EVENT_LABELS,
     TOML_BACKEND,
@@ -44,6 +53,13 @@ from host_trust import (
     parse_toml,
     plugin_content_hash,
     trust_report,
+)
+from guard_tool import (
+    allowed_read_only,
+    image_command_allowed,
+    routing_inspection_command_allowed,
+    semantic_assessment_command_allowed,
+    shell_allowed,
 )
 from route import infer_from_text, infer_tier, strip_entry_phrase
 
@@ -58,7 +74,7 @@ def host_trust_fixture(base: Path, *, tamper: str | None = None) -> tuple[Path, 
     """Create a fake Codex home with one installed plugin and hook trust state."""
     codex_home = base / "codex-home"
     version = json.loads((PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))["version"]
-    root = codex_home / "plugins/cache/delivery-conductor/delivery-conductor" / version
+    root = (codex_home / "plugins/cache/delivery-conductor/delivery-conductor" / version).resolve()
     hooks = json.loads((PLUGIN_ROOT / "hooks/codex-hooks.json").read_text(encoding="utf-8"))
     write(root / "hooks/codex-hooks.json", json.dumps(hooks, ensure_ascii=False))
     write(root / "README.md", "fixture bundle\n")
@@ -75,7 +91,13 @@ def host_trust_fixture(base: Path, *, tamper: str | None = None) -> tuple[Path, 
                     "delivery-conductor@delivery-conductor:"
                     f"hooks/codex-hooks.json:{label}:{group_index}:{handler_index}"
                 )
-                trusted = declaration_hash(label, group.get("matcher"), handler)
+                trusted = declaration_hash(
+                    label,
+                    group.get("matcher"),
+                    handler,
+                    plugin_root=root,
+                    platform="nt" if os.name == "nt" else "posix",
+                )
                 entries.append((key, trusted, content_hash))
 
     if tamper == "declaration":
@@ -285,6 +307,25 @@ def run_hook(
     if not completed.stdout.strip():
         return {}
     return json.loads(completed.stdout)
+
+
+def run_manifest_hook(event: str, payload: dict, cwd: Path) -> subprocess.CompletedProcess[str]:
+    hooks = json.loads((PLUGIN_ROOT / "hooks/codex-hooks.json").read_text(encoding="utf-8"))
+    handler = hooks["hooks"][event][0]["hooks"][0]
+    platform = "nt" if os.name == "nt" else "posix"
+    command = handler["commandWindows"] if platform == "nt" else handler["command"]
+    argv = split_command(command.replace("${PLUGIN_ROOT}", str(PLUGIN_ROOT)), platform=platform)
+    environment = dict(os.environ)
+    environment["PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+    return subprocess.run(
+        argv,
+        input=json.dumps(payload, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=cwd,
+        env=environment,
+    )
 
 
 def guard_output(
@@ -671,6 +712,21 @@ class ConductorTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("interactive approval command", result.stderr)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "record.py"),
+                "--kind",
+                "command",
+                "--data",
+                '{"kind": "approval", "command": "echo ok", "result": "passed", "exit_code": 0}',
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("reserved fields", result.stderr)
 
     def test_approval_digest_changes_when_spec_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1384,6 +1440,32 @@ class ConductorTests(unittest.TestCase):
             self.assertEqual(state["route_status"], "provisional")
             self.assertIn("ui-ux-pro-max", state["components"])
 
+    def test_prompt_hook_uses_platform_python_command(self) -> None:
+        from hook_user_prompt import python_command
+
+        command = python_command(PLUGIN_ROOT / "scripts/route.py")
+        self.assertIn("route.py", command)
+        if os.name == "nt":
+            self.assertTrue(command.startswith("py -3 "))
+        else:
+            self.assertTrue(command.startswith("python3 "))
+
+    def test_prompt_hook_never_emits_traceback(self) -> None:
+        import hook_user_prompt
+
+        payload = {"cwd": str(PLUGIN_ROOT), "prompt": "编码总控 测试内部异常"}
+        stdout = io.StringIO()
+        with (
+            patch.object(hook_user_prompt, "build_context", side_effect=RuntimeError("boom")),
+            patch("sys.stdin", io.StringIO(json.dumps(payload, ensure_ascii=False))),
+            patch("sys.stdout", stdout),
+        ):
+            self.assertEqual(hook_user_prompt.main(), 0)
+        text = stdout.getvalue()
+        self.assertNotIn("Traceback", text)
+        self.assertIn("boom", text)
+        self.assertIn("Hook 内部错误", text)
+
     def test_prompt_hook_creates_provisional_semantic_assessment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -1717,6 +1799,68 @@ class ConductorTests(unittest.TestCase):
         self.assertTrue(any("guard_tool.py" in item["hooks"][0]["command"] for item in pretool_hooks))
         self.assertEqual(pretool_hooks[0]["matcher"], "*")
 
+    def test_hook_manifest_has_platform_neutral_python_entries(self) -> None:
+        hooks = json.loads((PLUGIN_ROOT / "hooks/codex-hooks.json").read_text(encoding="utf-8"))
+        expected = {
+            "UserPromptSubmit": "hook_user_prompt.py",
+            "PreToolUse": "guard_tool.py",
+            "SessionStart": "hook_session_start.py",
+        }
+        for event, script in expected.items():
+            handlers = [item for group in hooks["hooks"][event] for item in group["hooks"]]
+            self.assertEqual(len(handlers), 1, event)
+            handler = handlers[0]
+            self.assertEqual(handler["type"], "command", event)
+            self.assertIn(script, handler["command"], event)
+            self.assertIn(script, handler["commandWindows"], event)
+            self.assertIn('python3 "${PLUGIN_ROOT}/scripts/', handler["command"], event)
+            self.assertIn('py -3 "${PLUGIN_ROOT}/scripts/', handler["commandWindows"], event)
+            self.assertNotIn("sh -c", handler["command"], event)
+            self.assertNotIn("2>/dev/null", handler["command"], event)
+            self.assertNotIn("|| true", handler["command"], event)
+            self.assertNotIn("${PLUGIN_ROOT:-.}", handler["command"], event)
+            self.assertNotIn("${PLUGIN_ROOT:-.}", handler["commandWindows"], event)
+
+    def test_hook_manifest_current_platform_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            cases = {
+                "UserPromptSubmit": {
+                    "cwd": str(base),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": "编码总控",
+                    "session_id": "smoke-session",
+                },
+                "PreToolUse": {
+                    "cwd": str(base),
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git status"},
+                },
+                "SessionStart": {
+                    "cwd": str(base),
+                    "hook_event_name": "SessionStart",
+                    "session_id": "smoke-session",
+                },
+            }
+            for event, payload in cases.items():
+                completed = run_manifest_hook(event, payload, base)
+                self.assertEqual(completed.returncode, 0, event + completed.stdout + completed.stderr)
+                if completed.stdout.strip():
+                    output = json.loads(completed.stdout)
+                    self.assertEqual(output["hookSpecificOutput"]["hookEventName"], event)
+                else:
+                    self.assertEqual(event, "PreToolUse")
+
+    def test_docs_describe_windows_python_entrypoint(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        skill = (PLUGIN_ROOT / "skills/delivery-conductor/SKILL.md").read_text(encoding="utf-8")
+        for text in (readme, skill):
+            self.assertIn("Windows", text)
+            self.assertIn("py -3", text)
+            self.assertIn("commandWindows", text)
+        self.assertIn("0.171.0", readme)
+
     def test_skill_documents_human_approval_protocol(self) -> None:
         skill = (PLUGIN_ROOT / "skills/delivery-conductor/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("编码总控", skill)
@@ -1750,7 +1894,7 @@ class ConductorTests(unittest.TestCase):
         self.assertIn("artifacts/design/", readme)
         manifest = json.loads((PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
         self.assertTrue(any("编码总控" in prompt for prompt in manifest["interface"]["defaultPrompt"]))
-        self.assertEqual(manifest["version"], "0.4.2")
+        self.assertEqual(manifest["version"], "0.5.0")
         marketplace = json.loads((PLUGIN_ROOT / ".agents/plugins/marketplace.json").read_text(encoding="utf-8"))
         self.assertEqual(marketplace["plugins"][0]["version"], manifest["version"])
 
@@ -1778,17 +1922,53 @@ class PreImplementationGuardTests(unittest.TestCase):
         add_plan(state, base, approval=True)
         return state
 
+    def test_windows_read_only_commands_are_allowed(self) -> None:
+        for command in (
+            "git status --short",
+            "Get-Content 'C:\\A B\\proposal.md'",
+            "Select-String -Pattern trust -Path C:\\A B\\proposal.md",
+            "Get-ChildItem C:\\A B",
+            "Test-Path C:\\A B\\proposal.md",
+            "Resolve-Path C:\\A B\\proposal.md",
+        ):
+            args = split_command(command, platform="nt")
+            self.assertTrue(allowed_read_only(args, platform="nt"), command)
+
+    def test_windows_write_command_is_rejected(self) -> None:
+        args = split_command("Set-Content C:\\A B\\proposal.md changed", platform="nt")
+        self.assertFalse(allowed_read_only(args, platform="nt"))
+
+    def test_windows_shell_wrapper_is_rejected(self) -> None:
+        command = "powershell -NoProfile -Command Get-Content C:\\A B\\proposal.md"
+        self.assertFalse(routing_inspection_command_allowed(command, platform="nt"))
+        where_command = "where -InputObject 1 { Remove-Item -Recurse -Force C:\\project }"
+        self.assertFalse(allowed_read_only(split_command(where_command, platform="nt"), platform="nt"))
+        scriptblock_command = "Get-Content { Remove-Item -Recurse -Force C:\\project }"
+        self.assertFalse(allowed_read_only(split_command(scriptblock_command, platform="nt"), platform="nt"))
+
+    def test_windows_python_launcher_handshake_and_assessment_are_allowed(self) -> None:
+        self.assertTrue(routing_inspection_command_allowed("py -3 scripts/gate.py", platform="nt"))
+        self.assertTrue(shell_allowed("py -3 scripts/gate.py", platform="nt"))
+        command = "py -3 scripts/route.py --assess-json '{}' --state state.json --base-dir ."
+        self.assertTrue(semantic_assessment_command_allowed(command, platform="nt"))
+
     def test_blocks_implementation_shell_before_plan_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             state = self.spec_approved_state(base)
+            launcher = "py -3" if os.name == "nt" else "python3"
             commands = [
                 "touch src/app.py",
                 "mkdir -p src",
                 "npm install",
                 "cargo build",
-                "python3 build.py",
-                "python3 -c \"open('src/app.py', 'w')\"",
+                f"{launcher} build.py",
+                f"{launcher} -c \"open('src/app.py', 'w')\"",
+                f"{launcher} -c'touch src/app.py' {SCRIPTS / 'approve.py'}",
+                f"{launcher} -cmalicious {SCRIPTS / 'approve.py'}",
+                f"{launcher} -Icmalicious {SCRIPTS / 'approve.py'}",
+                f"{launcher} -mjson.tool {SCRIPTS / 'approve.py'}",
+                f"{launcher} -Imjson.tool {SCRIPTS / 'approve.py'}",
                 "bash -lc 'touch src/app.py'",
             ]
             for command in commands:
@@ -1797,19 +1977,32 @@ class PreImplementationGuardTests(unittest.TestCase):
     def test_allows_artifact_shell_before_plan_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
+            subprocess.run(
+                ["git", "init", "-q", str(base)],
+                capture_output=True,
+                check=False,
+            )
             state = self.spec_approved_state(base)
+            chrome_cdp = Path.home() / ".codex/tools/chrome-cdp.mjs"
+            ui_search = Path.home() / ".agents/skills/ui-ux-pro-max/scripts/search.py"
+            launcher = "py -3" if os.name == "nt" else "python3"
             commands = [
-                "touch openspec/changes/example/notes.md",
-                "mkdir -p artifacts/design/references",
-                "cp /tmp/reference.png artifacts/design/references/reference.png",
-                "touch docs/superpowers/plans/plan.md",
-                "sips -s format png /tmp/input.png --out artifacts/design/desktop.png",
-                "node /home/test/.codex/tools/chrome-cdp.mjs shot artifacts/design/desktop.png",
-                "python3 /home/test/.agents/skills/ui-ux-pro-max/scripts/search.py \"dashboard\" --domain style",
+                f'node "{chrome_cdp}" shot artifacts/design/desktop.png',
+                f'{launcher} "{ui_search}" "dashboard" --domain style',
                 "git status",
-                "cat src/app.py",
-                "mkdir -p /tmp/dc-preview",
             ]
+            if os.name != "nt":
+                commands.extend([
+                    "touch openspec/changes/example/notes.md",
+                    "mkdir -p artifacts/design/references",
+                    "cp fixtures/reference.png artifacts/design/references/reference.png",
+                    "touch docs/superpowers/plans/plan.md",
+                    "cat src/app.py",
+                    "sed -n '1,20p' src/app.py",
+                    "find . -maxdepth 2 -type f -print",
+                ])
+            if sys.platform == "darwin":
+                commands.append("sips -s format png fixtures/input.png --out artifacts/design/desktop.png")
             for command in commands:
                 self.assert_allowed(guard_output(base, state, command=command), command)
 
@@ -1831,7 +2024,6 @@ class PreImplementationGuardTests(unittest.TestCase):
                 {"file_path": "openspec/changes/example/design.md"},
                 {"file_path": "docs/plans/plan.md"},
                 {"file_path": "artifacts/design/design-review.md"},
-                {"file_path": "/tmp/preview.png"},
             ]
             for tool_input in allowed:
                 self.assert_allowed(
@@ -1867,27 +2059,402 @@ class PreImplementationGuardTests(unittest.TestCase):
             self.assert_allowed(guard_output(base, state, command=allowed_shell))
             chained = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: openspec/x.md\n+x\n*** End Patch\nPATCH && touch src/app.py"
             self.assert_denied(guard_output(base, state, command=chained))
+            appended = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: openspec/x.md\n+x\n*** End Patch\nPATCH\ntouch src/app.py"
+            self.assert_denied(guard_output(base, state, command=appended))
+            replaced = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: openspec/x.md\n+x\n*** End Patch\nPATCH & touch src/app.py"
+            self.assert_denied(guard_output(base, state, command=replaced))
+            self.assert_denied(guard_output(base, state, command="/tmp/evil/apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: openspec/x.md\n+x\n*** End Patch\nPATCH"))
+            unquoted = "apply_patch <<PATCH\n*** Begin Patch\n*** Add File: openspec/x.md\n+$(touch src/app.py)\n*** End Patch\nPATCH"
+            self.assert_denied(guard_output(base, state, command=unquoted))
+            double_quoted = 'apply_patch <<"PATCH"\n*** Begin Patch\n*** Add File: openspec/x.md\n+$(touch src/app.py)\n*** End Patch\nPATCH'
+            self.assert_denied(guard_output(base, state, command=double_quoted))
+            namespaced = (
+                "*** Begin Patch\n*** Add File: openspec/changes/example/notes.md\n+note\n*** "
+                "End Patch"
+            )
+            for tool_name in ("mcp__evil__patch", "functions.apply_patch", "evil.patch"):
+                self.assert_denied(
+                    guard_output(base, state, tool_name=tool_name, tool_input={"input": namespaced}),
+                    tool_name,
+                )
 
-    def test_cp_and_mv_only_write_into_artifact_roots(self) -> None:
+    def test_copied_executables_cannot_impersonate_allowlisted_commands(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             state = self.spec_approved_state(base)
-            self.assert_allowed(guard_output(base, state, command="cp -t artifacts/design /tmp/a.png"))
-            self.assert_denied(guard_output(base, state, command="cp -t src /tmp/a.png"))
-            self.assert_allowed(guard_output(base, state, command="mv /tmp/a.png artifacts/design/a.png"))
+            fake = base / "artifacts/design/cat"
+            fake.parent.mkdir(parents=True, exist_ok=True)
+            fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake.chmod(0o755)
+            commands = [
+                f'"{fake}" -c "touch src/app.py"',
+                '"./artifacts/design/cat" README.md',
+                "/bin/cat README.md",
+                f'"{sys.executable}" "{SCRIPTS / "approve.py"}"',
+                "artifacts/design/apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: openspec/x.md\n+x\n*** End Patch\nPATCH",
+            ]
+            for command in commands:
+                self.assert_denied(guard_output(base, state, command=command), command)
+
+    def test_imagemagick_output_operators_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            state = self.spec_approved_state(base)
+            commands = [
+                "magick fixtures/input.png +write png:src/app.py artifacts/design/out.png",
+                "magick fixtures/input.png -write src/app.py artifacts/design/out.png",
+                "convert fixtures/input.png +write /tmp/outside.png artifacts/design/out.png",
+                "magick artifacts/design/evil.msl artifacts/design/out.png",
+                "magick mvg:artifacts/design/evil.txt artifacts/design/out.png",
+                "magick MVG:artifacts/design/evil.txt[0] artifacts/design/out.png",
+                "magick -process module artifacts/design/out.png",
+            ]
+            for command in commands:
+                self.assert_denied(guard_output(base, state, command=command), command)
+            self.assertTrue(
+                image_command_allowed(
+                    "magick",
+                    ["magick", "fixtures/input.png", "artifacts/design/out.png"],
+                    base,
+                )
+            )
+            for args in (
+                ["magick", "fixtures/input.png", "+write", "png:src/app.py", "artifacts/design/out.png"],
+                ["convert", "fixtures/input.png", "-write", "src/app.py", "artifacts/design/out.png"],
+                ["magick", "artifacts/design/evil.msl", "artifacts/design/out.png"],
+                ["magick", "artifacts/design/evil.msl[0]", "artifacts/design/out.png"],
+                ["magick", "artifacts/design/evil.MVG[0]", "artifacts/design/out.png"],
+                ["magick", "mvg:artifacts/design/evil.txt", "artifacts/design/out.png"],
+                ["magick", "MSL:artifacts/design/evil.txt[0]", "artifacts/design/out.png"],
+                ["magick", "-process", "module", "artifacts/design/out.png"],
+            ):
+                self.assertFalse(image_command_allowed(args[0], args, base), " ".join(args))
+
+    def test_file_compile_options_are_rejected(self) -> None:
+        self.assertTrue(allowed_read_only(["file", "src/app.py"], platform="posix"))
+        self.assertTrue(allowed_read_only(["file", "-b", "src/app.py"], platform="posix"))
+        self.assertTrue(allowed_read_only(["file", "-bi", "--mime", "src/app.py"], platform="posix"))
+        denied = [
+            ["file", "-C", "-m", "magic", "src/app.py"],
+            ["file", "-bC", "src/app.py"],
+            ["file", "-bCm", "magic", "src/app.py"],
+            ["file", "--compile", "src/app.py"],
+            ["file", "--comp", "src/app.py"],
+            ["file", "--magic-file", "magic", "src/app.py"],
+        ]
+        for args in denied:
+            self.assertFalse(allowed_read_only(args, platform="posix"), " ".join(args))
+
+    def test_cp_and_mv_directory_destinations_follow_existing_symlinks(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX cp/mv command semantics are verified on POSIX CI runners")
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as outside:
+            base = Path(temporary)
+            state = self.spec_approved_state(base)
+            destination = base / "artifacts/design"
+            destination.mkdir(parents=True)
+            outside_file = Path(outside) / "a.png"
+            outside_file.write_text("outside\n", encoding="utf-8")
+            try:
+                (destination / "a.png").symlink_to(outside_file)
+                (destination / "a\\b.png").symlink_to(outside_file)
+                (destination / "escape").symlink_to(Path(outside), target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink unavailable: {error}")
+            commands = [
+                "cp fixtures/a.png artifacts/design",
+                "cp -t artifacts/design fixtures/a.png",
+                "cp -R fixtures/escape artifacts/design",
+                "cp -R fixtures/dir artifacts/design",
+                "cp 'a\\b.png' artifacts/design",
+                "mv fixtures/a.png artifacts/design",
+            ]
+            for command in commands:
+                self.assert_denied(guard_output(base, state, command=command), command)
+            self.assert_allowed(
+                guard_output(base, state, command="cp -R fixtures/dir artifacts/design/new")
+            )
+
+    def test_cp_and_mv_only_write_into_artifact_roots(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX cp/mv command semantics are verified on POSIX CI runners")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            state = self.spec_approved_state(base)
+            self.assert_allowed(guard_output(base, state, command="cp -t artifacts/design fixtures/a.png"))
+            self.assert_allowed(guard_output(base, state, command="cp -vt artifacts/design fixtures/a.png"))
+            self.assert_denied(guard_output(base, state, command="cp -t src fixtures/a.png"))
+            self.assert_denied(guard_output(base, state, command="cp -t /tmp/outside fixtures/a.png"))
+            self.assert_denied(
+                guard_output(base, state, command="cp --target-dir=/tmp/outside fixtures/a.png artifacts/design/a.png")
+            )
+            self.assert_denied(
+                guard_output(base, state, command="cp --targ=src fixtures/a.png artifacts/design/a.png")
+            )
+            self.assert_denied(
+                guard_output(base, state, command="cp --parents ../../../outside/evil artifacts/design/out")
+            )
+            self.assert_allowed(
+                guard_output(base, state, command="mv artifacts/design/a.png artifacts/design/b.png")
+            )
+            self.assert_denied(guard_output(base, state, command="mv /tmp/a.png artifacts/design/a.png"))
+            self.assert_denied(
+                guard_output(base, state, command="mv --target=/tmp/outside artifacts/design/a.png artifacts/design/b.png")
+            )
+            self.assert_denied(
+                guard_output(base, state, command="mv -vt src artifacts/design/app.py")
+            )
             self.assert_denied(guard_output(base, state, command="mv src/app.py artifacts/design/app.py"))
 
     def test_generators_are_narrow_before_plan_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             state = self.spec_approved_state(base)
+            chrome_cdp = Path.home() / ".codex/tools/chrome-cdp.mjs"
             self.assert_allowed(
-                guard_output(base, state, command="node /home/test/.codex/tools/chrome-cdp.mjs goto https://example.com")
+                guard_output(base, state, command=f'node "{chrome_cdp}" goto https://example.com')
             )
+            with patch.dict(os.environ, {"NODE_OPTIONS": "--require /tmp/evil.js"}):
+                self.assert_denied(
+                    guard_output(base, state, command=f'node "{chrome_cdp}" goto https://example.com')
+                )
             self.assert_denied(
-                guard_output(base, state, command="node /home/test/.codex/tools/chrome-cdp.mjs shot src/app.png")
+                guard_output(base, state, command=f'node "{chrome_cdp}" shot src/app.png')
             )
             self.assert_denied(guard_output(base, state, command="python3 /tmp/evil.py"))
+            self.assert_denied(guard_output(base, state, command="node /tmp/evil/chrome-cdp.mjs goto https://example.com"))
+            self.assert_denied(
+                guard_output(base, state, command="python3 /tmp/evil/ui-ux-pro-max/scripts/search.py dashboard")
+            )
+            self.assert_denied(guard_output(base, state, command="python3 scripts/gate.py"))
+            self.assert_denied(guard_output(base, state, command="python3 /tmp/evil/route.py --assess-json '{}'"))
+            ui_search = Path.home() / ".agents/skills/ui-ux-pro-max/scripts/search.py"
+            launcher = "py -3" if os.name == "nt" else "python3"
+            for suffix in ("--persist --output-dir /tmp/outside", "-o/tmp/outside", "--force"):
+                self.assert_denied(
+                    guard_output(base, state, command=f'{launcher} "{ui_search}" "dashboard" {suffix}')
+                )
+            self.assert_denied(
+                guard_output(base, state, command=f'{launcher} "{ui_search}" "dashboard" --pe')
+            )
+
+    def test_unknown_tools_fail_closed_before_plan_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            state = self.spec_approved_state(base)
+            self.assert_denied(
+                guard_output(base, state, tool_name="mcp__git__commit", tool_input={})
+            )
+            self.assert_allowed(
+                guard_output(base, state, tool_name="update_plan", tool_input={})
+            )
+
+    def test_generic_write_tool_cannot_switch_to_patch_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            state = self.spec_approved_state(base)
+            patch_text = "*** Begin Patch\n*** Add File: openspec/changes/example/notes.md\n+x\n*** End Patch"
+            self.assert_denied(
+                guard_output(
+                    base,
+                    state,
+                    tool_name="Write",
+                    tool_input={"file_path": "src/app.py", "input": patch_text},
+                )
+            )
+
+    def test_unknown_write_tools_and_decoy_paths_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            state = self.spec_approved_state(base)
+            patch_text = (
+                "*** Begin Patch\n*** Add File: src/app.py\n+x\n*** "
+                "End Patch"
+            )
+            for tool_name in ("mcp__evil__write", "functions.write", "write_all", "mcp__evil__create_file"):
+                self.assert_denied(
+                    guard_output(
+                        base,
+                        state,
+                        tool_name=tool_name,
+                        tool_input={"file_path": "openspec/changes/example/notes.md", "input": patch_text},
+                    ),
+                    tool_name,
+                )
+            self.assert_denied(
+                guard_output(
+                    base,
+                    state,
+                    tool_name="move_file",
+                    tool_input={"source": "src/app.py", "destination": "openspec/changes/example/moved.py"},
+                )
+            )
+            self.assert_denied(
+                guard_output(
+                    base,
+                    state,
+                    tool_name="move_file",
+                    tool_input={"source": "artifacts/design/a.png"},
+                )
+            )
+            self.assert_allowed(
+                guard_output(
+                    base,
+                    state,
+                    tool_name="write_file",
+                    tool_input={"file_path": "openspec/changes/example/notes.md"},
+                )
+            )
+            self.assert_allowed(
+                guard_output(
+                    base,
+                    state,
+                    tool_name="move_file",
+                    tool_input={"source": "artifacts/design/a.png", "destination": "artifacts/design/b.png"},
+                )
+            )
+
+    def test_artifact_writes_cannot_escape_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as outside:
+            base = Path(temporary)
+            outside_file = Path(outside) / "preview.png"
+            state = self.spec_approved_state(base)
+            commands = [
+                f'touch "{outside_file}"',
+                f'mkdir -p "{Path(outside) / "preview"}"',
+                f'sips -s format png fixtures/input.png --out "{outside_file}"',
+                f'cp fixtures/input.png "{outside_file}"',
+                f'touch artifacts/design/{{safe,{outside_file}}}',
+                'touch artifacts/design/$HOME/pwn.md',
+                'cp fixtures/input.png artifacts/design/${TARGET:-../../src/pwn}.md',
+            ]
+            for command in commands:
+                self.assert_denied(guard_output(base, state, command=command), command)
+            self.assert_denied(
+                guard_output(base, state, tool_name="Write", tool_input={"file_path": str(outside_file)})
+            )
+            patch = f"*** Begin Patch\n*** Add File: {outside_file}\n+x\n*** End Patch"
+            self.assert_denied(guard_output(base, state, tool_name="apply_patch", tool_input={"input": patch}))
+
+    def test_artifact_symlink_escape_is_denied(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as outside:
+            base = Path(temporary)
+            state = self.spec_approved_state(base)
+            link = base / "artifacts/design/escape"
+            link.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                link.symlink_to(Path(outside), target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink unavailable: {error}")
+            self.assert_denied(
+                guard_output(base, state, tool_name="Write", tool_input={"file_path": str(link / "pwn.md")})
+            )
+            self.assert_denied(guard_output(base, state, command=f'touch "{link / "pwn.md"}"'))
+
+    def test_sed_and_find_allow_only_proven_read_only_forms(self) -> None:
+        allowed = [
+            ["sed", "-n", "1,80p", "src/app.py"],
+            ["sed", "-n", "5p", "src/app.py"],
+            ["sed", "-n", "1p;20p", "src/app.py"],
+            ["find", ".", "-maxdepth", "2", "-type", "f", "-print"],
+        ]
+        denied = [
+            ["sed", "-i", "s/a/b/", "src/app.py"],
+            ["sed", "--in-place=.bak", "s/a/b/", "src/app.py"],
+            ["sed", "-n", "1w /tmp/pwn", "src/app.py"],
+            ["sed", "-n", "1e touch /tmp/pwn", "src/app.py"],
+            ["sed", "-n", "s/a/b/w /tmp/pwn", "src/app.py"],
+            ["sed", "-f", "commands.sed", "src/app.py"],
+            ["find", ".", "-delete"],
+            ["find", ".", "-exec", "rm", "{}", "+"],
+            ["find", ".", "-execdir", "rm", "{}", "+"],
+            ["find", ".", "-fprint0", "/tmp/pwn"],
+            ["find", ".", "-fprintf", "/tmp/pwn", "%p"],
+            ["find", ".", "-fls", "/tmp/pwn"],
+        ]
+        platform = "posix"
+        for args in allowed:
+            self.assertTrue(allowed_read_only(args, platform=platform), " ".join(args))
+        for args in denied:
+            self.assertFalse(allowed_read_only(args, platform=platform), " ".join(args))
+
+    def test_git_side_effect_options_are_rejected(self) -> None:
+        denied = [
+            ["git", "diff", "--ext-diff=true"],
+            ["git", "diff", "--textconv=true"],
+            ["git", "log", "--show-signature"],
+            ["git", "log", "--open-files-in-pager=sh -c id"],
+            ["git", "status", "--exec-path=/tmp/evil"],
+            ["git", "status", "--config-env=diff.external=EVIL"],
+            ["git", "status", "--output=/tmp/out"],
+            ["git", "--no-pager", "log", "--no-textconv", "--no-ext-diff", "--no-show-signature", "--format=%G?"],
+            ["git", "diff"],
+            ["git", "show"],
+            ["git", "log"],
+            ["git", "--no-pager", "diff", "--", "--no-ext-diff", "--no-textconv"],
+            ["git", "--no-pager", "log", "--", "--no-ext-diff", "--no-textconv", "--no-show-signature"],
+            [
+                "git",
+                "--no-pager",
+                "diff",
+                "--word-diff-regex",
+                "--no-ext-diff",
+                "--ignore-matching-lines",
+                "--no-textconv",
+                "--",
+                "README.md",
+            ],
+            ["git", "--no-pager", "log", "--format", "--no-ext-diff", "--no-textconv", "--no-show-signature"],
+            ["git", "--no-pager", "diff", "--no-ext-diff=1", "--no-textconv=1"],
+        ]
+        for args in denied:
+            self.assertFalse(allowed_read_only(args, platform="posix"), " ".join(args))
+        self.assertTrue(
+            allowed_read_only(
+                ["git", "--no-pager", "diff", "--no-textconv", "--no-ext-diff"],
+                platform="posix",
+            )
+        )
+        self.assertTrue(
+            allowed_read_only(
+                ["git", "--no-pager", "diff", "--no-textconv", "--no-ext-diff", "--", "src"],
+                platform="posix",
+            )
+        )
+        self.assertTrue(
+            allowed_read_only(
+                ["git", "--no-pager", "diff", "--no-textconv", "--no-ext-diff", "--stat"],
+                platform="posix",
+            )
+        )
+        self.assertTrue(
+            allowed_read_only(
+                [
+                    "git",
+                    "--no-pager",
+                    "log",
+                    "--no-textconv",
+                    "--no-ext-diff",
+                    "--no-show-signature",
+                    "--oneline",
+                    "-5",
+                ],
+                platform="posix",
+            )
+        )
+
+    def test_git_status_rejects_fsmonitor_commands(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(base)], check=False, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(base), "config", "core.fsmonitor", "console.exe"],
+                check=False,
+                capture_output=True,
+            )
+            self.assertFalse(allowed_read_only(["git", "status", "--short"], cwd=base, platform="posix"))
 
     def test_implementation_is_allowed_after_plan_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1918,6 +2485,50 @@ class PreImplementationGuardTests(unittest.TestCase):
             self.assert_denied(
                 guard_output(base, state, tool_name="Write", tool_input={"file_path": "openspec/changes/example/new.md"})
             )
+
+
+class RuntimeCompatibilityTests(unittest.TestCase):
+    def test_windows_hook_interpreter_uses_py_launcher(self) -> None:
+        self.assertEqual(hook_interpreter(platform="nt"), ["py", "-3"])
+        self.assertEqual(hook_interpreter(platform="posix"), ["python3"])
+
+    def test_windows_quote_argv_uses_cmd_quoting(self) -> None:
+        self.assertEqual(
+            quote_argv(
+                [r"C:\Program Files\Python\python.exe", r"C:\A B\hook.py"],
+                platform="nt",
+            ),
+            r'"C:\Program Files\Python\python.exe" "C:\A B\hook.py"',
+        )
+
+    def test_windows_program_name_uses_ntpath(self) -> None:
+        self.assertEqual(program_name(r"C:\Windows\System32\Git.exe", platform="nt"), "git.exe")
+
+    def test_windows_split_command_preserves_path_spaces(self) -> None:
+        self.assertEqual(
+            split_command(r'Get-Content "C:\A B\proposal.md"', platform="nt"),
+            ["Get-Content", r"C:\A B\proposal.md"],
+        )
+
+    def test_windows_relative_name_uses_backslashes(self) -> None:
+        self.assertEqual(relative_name_bytes(Path("a/b.txt"), platform="nt"), b"a\\b.txt")
+        self.assertEqual(relative_name_bytes(Path("a/b.txt"), platform="posix"), b"a/b.txt")
+        if os.name != "nt":
+            self.assertEqual(relative_name_bytes(Path(os.fsdecode(b"bad-\xff.txt")), platform="posix"), b"bad-\xff.txt")
+
+    def test_shell_control_characters_are_detected(self) -> None:
+        for command in (
+            "git status; whoami",
+            "a || b",
+            "a | b",
+            "a & b",
+            "Get-Content x & Remove-Item y",
+            "echo $(whoami)",
+            "a\r\nb",
+            "(Remove-Item x)",
+        ):
+            self.assertTrue(has_shell_control(command), command)
+        self.assertFalse(has_shell_control('Get-Content "C:\\A B\\file.txt"'))
 
 
 class TerminalApprovalTests(unittest.TestCase):
@@ -1968,12 +2579,11 @@ class TerminalApprovalTests(unittest.TestCase):
 
 
 class InstallScriptTests(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("bash"), "requires bash")
-    def test_install_script_copies_plugin_without_caches(self) -> None:
+    def test_installer_copies_plugin_without_caches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "plugin"
             completed = subprocess.run(
-                ["bash", str(SCRIPTS / "install_linux.sh"), "--target", str(target)],
+                [sys.executable, str(SCRIPTS / "install.py"), "--target", str(target)],
                 cwd=str(PLUGIN_ROOT),
                 capture_output=True,
                 text=True,
@@ -1984,6 +2594,41 @@ class InstallScriptTests(unittest.TestCase):
             self.assertTrue((target / "scripts/doctor.py").is_file())
             self.assertFalse(any(target.rglob("__pycache__")))
             self.assertFalse(any(target.rglob("*.pyc")))
+
+    def test_installer_refuses_non_empty_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "plugin"
+            target.mkdir()
+            (target / "keep.txt").write_text("keep\n", encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "install.py"), "--target", str(target)],
+                cwd=str(PLUGIN_ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertTrue((target / "keep.txt").is_file())
+
+    def test_installer_fails_when_doctor_fails(self) -> None:
+        target = Path(tempfile.gettempdir()) / "delivery-conductor-doctor-failure"
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with (
+            patch.object(install_module, "install"),
+            patch.object(
+                install_module.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 1),
+            ),
+            patch.object(sys, "argv", ["install.py", "--target", str(target)]),
+            patch("sys.stderr", new=stderr),
+            patch("sys.stdout", new=stdout),
+        ):
+            code = install_module.main()
+        self.assertEqual(code, 1)
+        self.assertIn("doctor.py", stderr.getvalue())
+        self.assertNotIn("下一步", stdout.getvalue())
 
 
 class DoctorTests(unittest.TestCase):
@@ -2011,9 +2656,15 @@ class DoctorTests(unittest.TestCase):
             names = {item["name"] for item in report["checks"]}
             self.assertIn("python", names)
             self.assertIn("toml", names)
+            self.assertIn("hook_runtime", names)
             self.assertIn("approval_backend", names)
             self.assertIn("hook_trust", names)
             self.assertIn("plugin_manifest", names)
+
+    def test_doctor_uses_cross_platform_tomli_guidance(self) -> None:
+        source = (SCRIPTS / "doctor.py").read_text(encoding="utf-8")
+        self.assertNotIn("sudo apt install", source)
+        self.assertIn("pip install tomli", source)
 
     def test_doctor_reports_terminal_only_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2036,7 +2687,7 @@ class DoctorTests(unittest.TestCase):
             base = Path(temporary)
             fake_bin = base / "bin"
             fake_bin.mkdir()
-            fake_codex = fake_bin / "codex"
+            fake_codex = fake_bin / ("codex.exe" if os.name == "nt" else "codex")
             fake_codex.write_text("not an executable format\n", encoding="utf-8")
             fake_codex.chmod(0o755)
             completed = self.run_doctor(
@@ -2052,6 +2703,65 @@ class DoctorTests(unittest.TestCase):
 
 
 class HostTrustTests(unittest.TestCase):
+    def test_content_hash_uses_windows_relative_path_bytes(self) -> None:
+        from host_trust import _relative_hash_name
+
+        self.assertEqual(_relative_hash_name(Path("a/b.txt"), platform="nt"), b"a\\b.txt")
+        self.assertEqual(_relative_hash_name(Path("a/b.txt"), platform="posix"), b"a/b.txt")
+
+    def test_content_hash_rejects_symlink_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "plugin"
+            root.mkdir()
+            (root / "real.txt").write_text("real\n", encoding="utf-8")
+            try:
+                (root / "link.txt").symlink_to(root / "real.txt")
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation is unavailable")
+            with self.assertRaises(OSError):
+                plugin_content_hash(root)
+
+    def test_windows_declaration_hash_uses_command_windows(self) -> None:
+        root = Path(r"C:\plugins\delivery-conductor")
+        handler = {
+            "type": "command",
+            "command": 'python3 "${PLUGIN_ROOT}/scripts/guard_tool.py"',
+            "commandWindows": 'py -3 "${PLUGIN_ROOT}/scripts/guard_tool.py"',
+        }
+        expected = declaration_hash(
+            "pre_tool_use",
+            "*",
+            {
+                "type": "command",
+                "command": 'py -3 "C:\\plugins\\delivery-conductor/scripts/guard_tool.py"',
+            },
+            plugin_root=root,
+            platform="posix",
+        )
+        actual = declaration_hash(
+            "pre_tool_use",
+            "*",
+            handler,
+            plugin_root=root,
+            platform="nt",
+        )
+        self.assertEqual(actual, expected)
+
+    def test_declaration_hash_substitutes_plugin_root(self) -> None:
+        root = Path(tempfile.gettempdir()) / "delivery-conductor"
+        templated = {
+            "type": "command",
+            "command": 'python3 "${PLUGIN_ROOT}/scripts/guard_tool.py"',
+        }
+        absolute = {
+            "type": "command",
+            "command": f'python3 "{root}/scripts/guard_tool.py"',
+        }
+        self.assertEqual(
+            declaration_hash("pre_tool_use", "*", templated, plugin_root=root),
+            declaration_hash("pre_tool_use", "*", absolute, plugin_root=root),
+        )
+
     def test_toml_backend_is_available(self) -> None:
         self.assertIn(TOML_BACKEND, {"tomllib", "tomli"})
         parsed = load_toml("[hooks]\nstate = {}\n")
@@ -2063,6 +2773,8 @@ class HostTrustTests(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn("tomli", message)
         self.assertIn("3.11", message)
+        self.assertIn("pip install tomli", message)
+        self.assertNotIn("sudo apt install", message)
 
     def test_trusted_declarations_and_content_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

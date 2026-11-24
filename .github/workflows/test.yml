@@ -7,7 +7,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,3 +26,6 @@ jobs:
 
       - name: Run delivery simulation
         run: python scripts/simulate.py
+
+      - name: Run environment doctor
+        run: python scripts/doctor.py --json

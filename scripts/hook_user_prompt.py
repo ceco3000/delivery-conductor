@@ -10,9 +10,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from route import ENTRY_PHRASE, strip_entry_phrase
+from conductor.runtime import hook_interpreter, quote_argv
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+
+
+def python_command(script: Path) -> str:
+    return quote_argv([*hook_interpreter(), str(script)])
 
 
 def emit(additional_context: str) -> None:
@@ -103,7 +108,7 @@ Requirement: {requirement}
 - 用下面的命令提交结构化评估；成功后 route.py 会输出最终 Route 行：
 
 ```bash
-python3 "{PLUGIN_ROOT / "scripts/route.py"}" --assess-json '<JSON>' --state "{state_path}" --base-dir "{cwd}"
+{python_command(PLUGIN_ROOT / "scripts/route.py")} --assess-json '<JSON>' --state "{state_path}" --base-dir "{cwd}"
 ```
 
 评估 JSON 必须包含：
@@ -147,7 +152,17 @@ def main() -> int:
     cwd = Path(str(cwd_value)).expanduser().resolve()
     if not cwd.is_dir():
         cwd = Path.cwd()
-    emit(build_context(prompt, cwd))
+    try:
+        context = build_context(prompt, cwd)
+    except Exception as error:
+        context = (
+            "`编码总控` 入口已触发，但 Hook 内部错误。必须停止并报告错误，不得静默改用普通流程。\n"
+            f"错误：{type(error).__name__}: {error}"
+        )
+    try:
+        emit(context)
+    except Exception:
+        return 0
     return 0
 
 

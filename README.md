@@ -26,11 +26,12 @@ delivery-conductor/
 │   ├── verify_evidence.py
 │   ├── simulate.py
 │   ├── doctor.py
-│   ├── install_linux.sh
+│   ├── install.py
 │   └── conductor/
 │       ├── evidence.py
 │       ├── gates.py
-│       └── model.py
+│       ├── model.py
+│       └── runtime.py
 └── tests/
 ```
 
@@ -38,9 +39,11 @@ delivery-conductor/
 
 ### 运行环境
 
-- macOS / Ubuntu / Linux：Python 3.10+，推荐 3.11+。
+- macOS / Linux：Python 3.10+，推荐 3.11+，使用 `python3`。
+- Windows：Python 3.10+，使用 Python Launcher `py -3`；不要求 Bash、WSL 或 Git Bash。
+- Codex：最低已验收基线为 `codex-cli 0.171.0`，且必须支持插件 Hooks 的 `commandWindows` 字段。更旧版本未验收；升级 Codex 或插件后都要重新确认 Hooks 信任。
 - 审批只使用交互终端：运行 `approve.py` 后必须精确输入 `批准 <token>`；无 TTY 时失败关闭，远程会话使用 `ssh -t`。
-- Ubuntu 22.04 等 Python 3.10 环境如果没有 `tomllib`，请安装 `python3-tomli`，或改用 Python 3.11+。
+- Python 3.10 环境如果没有 `tomllib`，请运行 `python -m pip install tomli`，或改用 Python 3.11+。
 - 安装或升级后必须重启 Codex 并在 Hooks 中信任三个钩子，否则门禁不会生效。
 
 安装前先运行诊断：
@@ -49,19 +52,33 @@ delivery-conductor/
 python3 scripts/doctor.py
 ```
 
+Windows PowerShell：
+
+```powershell
+py -3 scripts/doctor.py
+```
+
 诊断会检查 Python、TOML 解析、Codex 命令、终端审批、TTY、插件清单和钩子信任。任意平台可加 `--strict` 把警告视为失败：
 
 ```bash
 python3 scripts/doctor.py --strict
 ```
 
-Ubuntu 上也可以使用安装辅助脚本：
+### macOS / Linux
 
 ```bash
-bash scripts/install_linux.sh
+python3 scripts/install.py
 ```
 
-脚本只负责复制、权限、依赖检查和安装命令提示，不会写入 `~/.codex/config.toml`，也不会伪造钩子信任。
+### Windows PowerShell
+
+```powershell
+py -3 scripts/install.py
+```
+
+插件内只有一套 Python 实现。安装器只负责复制、依赖检查和安装命令提示，不会写入 `~/.codex/config.toml`，也不会伪造钩子信任。
+
+Hook 清单位于 `hooks/codex-hooks.json`。macOS/Linux 使用 `command` 的 `python3` 入口，Windows 使用 `commandWindows` 的 `py -3` 入口；两者运行同一个 `.py` 文件。`${PLUGIN_ROOT}` 由 Codex 替换，禁止写成 `${PLUGIN_ROOT:-.}` 或 `%PLUGIN_ROOT%`。
 
 从 GitHub 安装：
 
@@ -85,7 +102,7 @@ Then enable the plugin in Codex if it is not enabled automatically.
 
 插件依赖 Codex 的 `UserPromptSubmit`、`PreToolUse` 和 `SessionStart` 钩子。Codex 不会自动信任新安装或内容已变化的钩子；未信任时，宿主会静默跳过钩子，审批门禁也就无法生效。
 
-安装或升级后，请重启 Codex，打开 Hooks，选择 Review hooks，确认三个钩子后选择 Trust all。信任记录绑定插件声明和整包内容哈希；插件内容变化后必须重新确认。macOS 与 Linux 各自维护自己的信任记录，不能复用另一台机器的记录。
+安装或升级后，请重启 Codex，打开 Hooks，选择 Review hooks，确认三个钩子后选择 Trust all。信任记录绑定插件声明和整包内容哈希；插件内容变化后必须重新确认。macOS、Linux 与 Windows 各自维护自己的信任记录，不能复用另一台机器的记录。
 
 `route.py`、`gate.py` 和 `approve.py` 会在开始工作前运行 `host_trust.py` 自检。只要检测到已安装插件存在未信任、被禁用或内容已变化的钩子，命令立即退出非零并要求停止，不会继续创建状态、推进门禁或发起审批。
 
@@ -315,17 +332,17 @@ This protection only works when Codex trusts and enables the hook. The startup s
 
 The state file is a coordination aid, not a cryptographic security boundary. The interactive terminal token prevents an agent from turning a generic “继续” message into approval, and the hook blocks ordinary tool paths while approval is pending. A user who deliberately edits local state or runs bypass scripts can still do so.
 
-## Linux 排障与回滚
+## 三平台排障与回滚
 
 ### 常见问题
 
 | 现象 | 处理 |
 |---|---|
 | `approve.py` 提示需要交互终端 | 在本地终端运行；远程服务器使用 SSH `-t` 申请 TTY |
-| `python3 scripts/host_trust.py` 报缺少 `tomllib` | 安装 Python 3.11+，或运行 `sudo apt install python3-tomli` |
+| `python3 scripts/host_trust.py` 报缺少 `tomllib` | 运行 `python -m pip install tomli`，或安装 Python 3.11+ |
 | `host_trust.py` 报钩子未信任 | 重启 Codex，打开 Hooks > Review hooks，选择 Trust all，再重试 |
 | `codex plugin add` 找不到插件 | 确认在插件父目录运行 `codex plugin marketplace add ./delivery-conductor`，再执行安装 |
-| 路由把 Linux 任务识别成 UI | 确认使用本移植包；运行 `python3 -m unittest tests.test_conductor.ConductorTests.test_linux_is_not_ui_but_real_ui_is -v` |
+| 路由把文本改动误判为 UI | 运行 `python -m unittest tests.test_conductor.ConductorTests.test_linux_is_not_ui_but_real_ui_is -v` |
 | 审批后摘要失效 | 审批后不要修改规格、计划、预览或交付证据；修改后必须重新审批 |
 
 ### 回滚
@@ -334,7 +351,7 @@ The state file is a coordination aid, not a cryptographic security boundary. The
 codex plugin remove delivery-conductor@delivery-conductor
 ```
 
-然后移除本次添加的 marketplace 条目，并删除 `~/.codex/plugins/cache/delivery-conductor/` 下本次安装的版本。如果修改过 `~/.codex/config.toml`，从安装前备份恢复。macOS 本机插件缓存未被修改，不需要为本移植回滚 macOS。
+然后移除本次添加的 marketplace 条目，并删除当前 `CODEX_HOME` 下 `plugins/cache/delivery-conductor/` 中本次安装的版本。如果修改过 `~/.codex/config.toml`，从安装前备份恢复。Windows 默认位置是 `%USERPROFILE%\.codex`，不要删除其他平台或其他版本的缓存。
 
 ## Limits
 

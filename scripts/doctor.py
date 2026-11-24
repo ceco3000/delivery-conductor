@@ -19,6 +19,7 @@ from host_trust import (
     enforce_host_trust,
     plugin_is_installed_copy,
 )
+from conductor.runtime import hook_interpreter
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,6 +44,23 @@ def _python_check(checks: list[Check]) -> None:
         _add(checks, "python", "fail", f"{detail}；需要 Python 3.10+")
 
 
+def _hook_runtime_check(checks: list[Check]) -> None:
+    launcher = hook_interpreter()
+    try:
+        completed = subprocess.run(
+            [*launcher, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        _add(checks, "hook_runtime", "fail", f"Hook 解释器不可用: {' '.join(launcher)}: {error}")
+        return
+    status = "ok" if completed.returncode == 0 else "fail"
+    _add(checks, "hook_runtime", status, f"{' '.join(launcher)} (Python 3.10+)")
+
+
 def _toml_check(checks: list[Check]) -> None:
     if TOML_BACKEND:
         _add(checks, "toml", "ok", TOML_BACKEND)
@@ -51,7 +69,7 @@ def _toml_check(checks: list[Check]) -> None:
         checks,
         "toml",
         "fail",
-        "缺少 tomllib/tomli；请安装 Python 3.11+，或运行 `sudo apt install python3-tomli`",
+        "缺少 tomllib/tomli；请安装 Python 3.11+，或运行 `python -m pip install tomli`",
     )
 
 
@@ -139,6 +157,7 @@ def collect_checks() -> list[Check]:
         f"{platform_module.system()} {platform_module.release()} ({sys.platform})",
     )
     _python_check(checks)
+    _hook_runtime_check(checks)
     _toml_check(checks)
     _approval_check(checks)
     _codex_check(checks)

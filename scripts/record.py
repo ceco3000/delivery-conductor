@@ -38,6 +38,13 @@ def main() -> int:
     if not isinstance(data, dict):
         print("--data must be a JSON object", file=sys.stderr)
         return 2
+    reserved = sorted({"kind", "id", "timestamp"}.intersection(data))
+    if reserved:
+        print(
+            "Evidence data cannot override reserved fields: " + ", ".join(reserved),
+            file=sys.stderr,
+        )
+        return 2
 
     errors = validate_evidence(args.kind, data)
     if errors:
@@ -46,7 +53,7 @@ def main() -> int:
         return 2
 
     state = load_state(state_path)
-    entry = append_evidence(state, {"kind": args.kind, **data})
+    entry = append_evidence(state, {**data, "kind": args.kind})
     save_state(state_path, state)
 
     if args.json:

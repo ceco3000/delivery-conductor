@@ -133,10 +133,16 @@ python3 "$PLUGIN_ROOT/scripts/route.py" --assess-json '{
 Resolve the plugin root from this file's location. All commands below use `$PLUGIN_ROOT/scripts/`.
 
 1. Read the repository `AGENTS.md`.
-2. On a new Linux installation, or when approval or hook behavior looks wrong, run the environment doctor and treat any `FAIL` as a blocker:
+2. On a new macOS, Linux, or Windows installation, or when approval or hook behavior looks wrong, run the environment doctor and treat any `FAIL` as a blocker:
 
 ```bash
 python3 "$PLUGIN_ROOT/scripts/doctor.py"
+```
+
+Windows PowerShell uses the same Python entrypoint through the launcher:
+
+```powershell
+py -3 "$env:PLUGIN_ROOT/scripts/doctor.py"
 ```
 
 3. Create or inspect the provisional route:
@@ -218,7 +224,7 @@ Only these four gates accept human approval:
 python3 "$PLUGIN_ROOT/scripts/approve.py" --gate <gate>
 ```
 
-4. Stop and wait. Approval is terminal-only: run the command in an interactive TTY and enter the exact text `批准 <token>`. The same path is used on macOS and Linux. If no TTY is available, the command fails closed and suggests `ssh -t`.
+4. Stop and wait. Approval is terminal-only: run the command in an interactive TTY and enter the exact text `批准 <token>`. The same Python path is used on macOS, Linux, and Windows; Windows starts it with `py -3`. If no TTY is available, the command fails closed and suggests `ssh -t`.
 5. Advance the state only after the command exits `0`:
 
 ```bash
@@ -228,6 +234,12 @@ python3 "$PLUGIN_ROOT/scripts/gate.py" --advance
 不得自行写审批证据。Do not use `record.py`, direct JSON edits, or any other mechanism to fabricate `approval` or `user_approval` evidence. A generic message such as “继续” is not approval.
 
 Approval is bound to the gate, a one-time token, and a SHA-256 digest of the approved artifacts. If any approved file changes, the digest becomes stale and the user must approve again.
+
+## Windows Hook 启动
+
+Hook 清单位于 `hooks/codex-hooks.json`。macOS/Linux 使用 `command` 的 `python3` 入口，Windows 使用 `commandWindows` 的 `py -3` 入口；两者运行同一个 Python 文件。`${PLUGIN_ROOT}` 由 Codex 替换，禁止写成 `${PLUGIN_ROOT:-.}` 或 `%PLUGIN_ROOT%`。
+
+不要新增 `install.ps1`、Windows 专用业务脚本或第二套门禁实现。平台差异只允许存在于 `command`/`commandWindows` 声明和 `scripts/conductor/runtime.py` 适配层。
 
 ### UI design review package
 

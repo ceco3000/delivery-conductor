@@ -5,9 +5,14 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from conductor.runtime import is_windows, relative_name_bytes
 
 try:
     import tomllib as _toml
@@ -59,7 +64,7 @@ def parse_toml(text: str, module: Any | None) -> dict[str, Any]:
         raise HostTrustError(
             "无法读取 Codex 的 TOML 配置：当前 Python 没有 tomllib，也没有 tomli。"
             f"当前 Python: {sys.version.split()[0]}。"
-            "请安装 Python 3.11+，或运行 `sudo apt install python3-tomli`。"
+            "请安装 Python 3.11+，或运行 `python -m pip install tomli`。"
         )
     return module.loads(text)
 
@@ -76,19 +81,41 @@ def _canonical(value: Any) -> Any:
     return value
 
 
-def _normalized_command_handler(handler: dict[str, Any]) -> dict[str, Any]:
+def _resolved_command(
+    handler: dict[str, Any],
+    *,
+    plugin_root: Path | None,
+    platform: str | None,
+) -> str:
     command = str(handler.get("command", ""))
+    if is_windows(platform):
+        command = str(handler.get("commandWindows", handler.get("command_windows", command)))
+    if plugin_root is not None:
+        command = command.replace("${PLUGIN_ROOT}", str(plugin_root))
+        command = command.replace("${PLUGIN_DATA}", str(plugin_root))
+    return command
+
+
+def _normalized_command_handler(
+    handler: dict[str, Any],
+    *,
+    plugin_root: Path | None = None,
+    platform: str | None = None,
+) -> dict[str, Any]:
     timeout = handler.get("timeout")
     timeout = 600 if timeout is None else max(1, int(timeout))
     normalized: dict[str, Any] = {
         "type": "command",
-        "command": command,
+        "command": _resolved_command(handler, plugin_root=plugin_root, platform=platform),
         "timeout": timeout,
         "async": bool(handler.get("async", False)),
     }
     status_message = handler.get("statusMessage")
     if status_message is not None:
         normalized["statusMessage"] = str(status_message)
+    on_failure = handler.get("onFailure")
+    if on_failure is not None:
+        normalized["onFailure"] = str(on_failure)
     additional_context_limit = handler.get("additionalContextLimit")
     if additional_context_limit is not None:
         limit = int(additional_context_limit)
@@ -97,8 +124,19 @@ def _normalized_command_handler(handler: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def declaration_hash(event_label: str, matcher: str | None, handler: dict[str, Any]) -> str:
-    normalized = _normalized_command_handler(handler)
+def declaration_hash(
+    event_label: str,
+    matcher: str | None,
+    handler: dict[str, Any],
+    *,
+    plugin_root: str | os.PathLike[str] | None = None,
+    platform: str | None = None,
+) -> str:
+    normalized = _normalized_command_handler(
+        handler,
+        plugin_root=Path(plugin_root) if plugin_root is not None else None,
+        platform=platform,
+    )
     if event_label in MATCHERLESS_EVENTS:
         matcher = None
     identity: dict[str, Any] = {"event_name": event_label}
@@ -109,9 +147,14 @@ def declaration_hash(event_label: str, matcher: str | None, handler: dict[str, A
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
-def plugin_content_hash(root: str | os.PathLike[str]) -> str:
-    root_path = Path(root).resolve()
-    if not root_path.is_dir():
+def _relative_hash_name(path: Path, *, platform: str | None = None) -> bytes:
+    return relative_name_bytes(path, platform=platform)
+
+
+def plugin_content_hash(root: str | os.PathLike[str], *, platform: str | None = None) -> str:
+    root_path = Path(root).expanduser().absolute()
+    root_metadata = root_path.lstat()
+    if not stat.S_ISDIR(root_metadata.st_mode):
         raise OSError(f"plugin root is not a directory: {root_path}")
     digest = hashlib.sha256()
     digest.update(b"codex-plugin-bundle-v1")
@@ -122,16 +165,17 @@ def plugin_content_hash(root: str | os.PathLike[str]) -> str:
         name = "" if path == root_path else relative.name
         if name in SKIPPED_NAMES or name.endswith(".pyc") or name.endswith(".egg-info"):
             continue
-        encoded_name = b"" if path == root_path else os.fsencode(relative.as_posix())
+        encoded_name = b"" if path == root_path else _relative_hash_name(relative, platform=platform)
         digest.update(len(encoded_name).to_bytes(8, "little"))
         digest.update(encoded_name)
-        if path.is_dir():
+        metadata = path.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
             digest.update(b"directory")
             entries = sorted(path.iterdir(), key=lambda item: os.fsencode(item.name))
             pending.extend(reversed(entries))
-        elif path.is_file():
+        elif stat.S_ISREG(metadata.st_mode):
             digest.update(b"file")
-            length = path.stat().st_size
+            length = metadata.st_size
             digest.update(length.to_bytes(8, "little"))
             with path.open("rb") as handle:
                 remaining = length
@@ -219,7 +263,12 @@ def trust_report(
                 command_hooks += 1
                 key = f"{plugin_id}:{HOOKS_RELATIVE_PATH}:{event_label}:{group_index}:{handler_index}"
                 state = states.get(key, {})
-                expected_declaration = declaration_hash(event_label, matcher, handler)
+                expected_declaration = declaration_hash(
+                    event_label,
+                    matcher,
+                    handler,
+                    plugin_root=root,
+                )
                 errors = []
                 if state.get("enabled") is False:
                     errors.append("hook is disabled")
