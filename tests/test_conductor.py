@@ -1891,6 +1891,17 @@ class ConductorTests(unittest.TestCase):
             self.assertIn("commandWindows", text)
         self.assertIn("0.171.0", readme)
 
+    def test_readme_documents_features_dependencies_and_chinese_usage(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        for heading in ("## 功能", "## 子技能与子插件依赖", "## 安装", "## 使用方式"):
+            self.assertIn(heading, readme)
+        for component in ("OpenSpec", "Superpowers", "ECC", "UI UX Pro Max", "Chrome CDP"):
+            self.assertIn(component, readme)
+        self.assertIn("不捆绑", readme)
+        self.assertIn("安装本插件不等于安装这些依赖", readme)
+        for legacy_heading in ("## Layout", "## Install", "## Usage", "## State File", "## Limits"):
+            self.assertNotIn(legacy_heading, readme)
+
     def test_skill_documents_human_approval_protocol(self) -> None:
         skill = (PLUGIN_ROOT / "skills/delivery-conductor/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("编码总控", skill)
