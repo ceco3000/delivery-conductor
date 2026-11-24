@@ -335,7 +335,8 @@ def _git_workspace_digest(base_dir: str | Path) -> dict[str, Any]:
         root_result = subprocess.run(
             ["git", "-C", str(base_dir), "rev-parse", "--show-toplevel"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=10,
         )

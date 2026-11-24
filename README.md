@@ -78,7 +78,7 @@ py -3 scripts/install.py
 
 插件内只有一套 Python 实现。安装器只负责复制、依赖检查和安装命令提示，不会写入 `~/.codex/config.toml`，也不会伪造钩子信任。
 
-Hook 清单位于 `hooks/codex-hooks.json`。macOS/Linux 使用 `command` 的 `python3` 入口，Windows 使用 `commandWindows` 的 `py -3` 入口；两者运行同一个 `.py` 文件。`${PLUGIN_ROOT}` 由 Codex 替换，禁止写成 `${PLUGIN_ROOT:-.}` 或 `%PLUGIN_ROOT%`。
+Hook 清单位于 `hooks/codex-hooks.json`。macOS/Linux 使用 `command` 的 `python3` 入口，Windows 使用 `commandWindows` 的 `py -3` 入口；两者运行同一个 `.py` 文件。`${PLUGIN_ROOT}` 由 Codex 在执行 Hook 时替换，禁止写成 `${PLUGIN_ROOT:-.}` 或 `%PLUGIN_ROOT%`。信任校验使用替换前的声明模板，因此 `host_trust.py` 不会把插件绝对路径带入声明哈希。
 
 从 GitHub 安装：
 

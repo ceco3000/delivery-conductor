@@ -16,6 +16,7 @@ SCRIPTS = PLUGIN_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import approve as approve_module
+import doctor as doctor_module
 import install as install_module
 from approve import PrerequisiteError, approve_gate, confirm_with_user
 from conductor.evidence import validate_evidence
@@ -95,7 +96,6 @@ def host_trust_fixture(base: Path, *, tamper: str | None = None) -> tuple[Path, 
                     label,
                     group.get("matcher"),
                     handler,
-                    plugin_root=root,
                     platform="nt" if os.name == "nt" else "posix",
                 )
                 entries.append((key, trusted, content_hash))
@@ -1450,6 +1450,36 @@ class ConductorTests(unittest.TestCase):
         else:
             self.assertTrue(command.startswith("python3 "))
 
+    def test_prompt_hook_decodes_child_output_as_utf8_with_replacement(self) -> None:
+        import hook_user_prompt
+
+        route = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout="Route: T1 | localized change\n",
+            stderr="",
+        )
+        gate = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=json.dumps({"next_gate": "verification"}),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            with patch.object(
+                hook_user_prompt.subprocess,
+                "run",
+                side_effect=[route, gate],
+            ) as run:
+                context = hook_user_prompt.build_context("编码总控 修复 Windows 兼容", base)
+        self.assertIn("Route: T1", context)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs.get("encoding"), "utf-8")
+            self.assertEqual(call.kwargs.get("errors"), "replace")
+            self.assertNotIn("text", call.kwargs)
+
     def test_prompt_hook_never_emits_traceback(self) -> None:
         import hook_user_prompt
 
@@ -1894,7 +1924,7 @@ class ConductorTests(unittest.TestCase):
         self.assertIn("artifacts/design/", readme)
         manifest = json.loads((PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
         self.assertTrue(any("编码总控" in prompt for prompt in manifest["interface"]["defaultPrompt"]))
-        self.assertEqual(manifest["version"], "0.5.0")
+        self.assertEqual(manifest["version"], "0.5.1")
         marketplace = json.loads((PLUGIN_ROOT / ".agents/plugins/marketplace.json").read_text(encoding="utf-8"))
         self.assertEqual(marketplace["plugins"][0]["version"], manifest["version"])
 
@@ -2666,6 +2696,24 @@ class DoctorTests(unittest.TestCase):
         self.assertNotIn("sudo apt install", source)
         self.assertIn("pip install tomli", source)
 
+    def test_doctor_decodes_subprocess_output_as_utf8_with_replacement(self) -> None:
+        completed = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout="codex-cli 0.172.0\n",
+            stderr="",
+        )
+        with (
+            patch.object(doctor_module.shutil, "which", return_value="codex"),
+            patch.object(doctor_module.subprocess, "run", return_value=completed) as run,
+        ):
+            checks: list[doctor_module.Check] = []
+            doctor_module._codex_check(checks)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs.get("encoding"), "utf-8")
+        self.assertEqual(kwargs.get("errors"), "replace")
+        self.assertNotIn("text", kwargs)
+
     def test_doctor_reports_terminal_only_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             completed = self.run_doctor(Path(temporary), "--json")
@@ -2733,10 +2781,9 @@ class HostTrustTests(unittest.TestCase):
             "*",
             {
                 "type": "command",
-                "command": 'py -3 "C:\\plugins\\delivery-conductor/scripts/guard_tool.py"',
+                "command": 'py -3 "${PLUGIN_ROOT}/scripts/guard_tool.py"',
             },
-            plugin_root=root,
-            platform="posix",
+            platform="nt",
         )
         actual = declaration_hash(
             "pre_tool_use",
@@ -2747,7 +2794,7 @@ class HostTrustTests(unittest.TestCase):
         )
         self.assertEqual(actual, expected)
 
-    def test_declaration_hash_substitutes_plugin_root(self) -> None:
+    def test_declaration_hash_keeps_plugin_root_template(self) -> None:
         root = Path(tempfile.gettempdir()) / "delivery-conductor"
         templated = {
             "type": "command",
@@ -2757,9 +2804,14 @@ class HostTrustTests(unittest.TestCase):
             "type": "command",
             "command": f'python3 "{root}/scripts/guard_tool.py"',
         }
+        templated_hash = declaration_hash("pre_tool_use", "*", templated)
         self.assertEqual(
+            templated_hash,
             declaration_hash("pre_tool_use", "*", templated, plugin_root=root),
-            declaration_hash("pre_tool_use", "*", absolute, plugin_root=root),
+        )
+        self.assertNotEqual(
+            templated_hash,
+            declaration_hash("pre_tool_use", "*", absolute),
         )
 
     def test_toml_backend_is_available(self) -> None:

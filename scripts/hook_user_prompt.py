@@ -53,7 +53,8 @@ def build_context(prompt: str, cwd: Path) -> str:
         ],
         cwd=str(cwd),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if route.returncode != 0:
@@ -75,7 +76,8 @@ def build_context(prompt: str, cwd: Path) -> str:
         ],
         cwd=str(cwd),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     next_gate = "unknown"

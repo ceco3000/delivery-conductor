@@ -50,7 +50,8 @@ def _hook_runtime_check(checks: list[Check]) -> None:
         completed = subprocess.run(
             [*launcher, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=10,
         )
@@ -94,7 +95,8 @@ def _codex_check(checks: list[Check]) -> None:
         completed = subprocess.run(
             [executable, "--version"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=10,
         )

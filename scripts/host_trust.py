@@ -81,32 +81,27 @@ def _canonical(value: Any) -> Any:
     return value
 
 
-def _resolved_command(
+def _declaration_command(
     handler: dict[str, Any],
     *,
-    plugin_root: Path | None,
     platform: str | None,
 ) -> str:
     command = str(handler.get("command", ""))
     if is_windows(platform):
         command = str(handler.get("commandWindows", handler.get("command_windows", command)))
-    if plugin_root is not None:
-        command = command.replace("${PLUGIN_ROOT}", str(plugin_root))
-        command = command.replace("${PLUGIN_DATA}", str(plugin_root))
     return command
 
 
 def _normalized_command_handler(
     handler: dict[str, Any],
     *,
-    plugin_root: Path | None = None,
     platform: str | None = None,
 ) -> dict[str, Any]:
     timeout = handler.get("timeout")
     timeout = 600 if timeout is None else max(1, int(timeout))
     normalized: dict[str, Any] = {
         "type": "command",
-        "command": _resolved_command(handler, plugin_root=plugin_root, platform=platform),
+        "command": _declaration_command(handler, platform=platform),
         "timeout": timeout,
         "async": bool(handler.get("async", False)),
     }
@@ -132,9 +127,11 @@ def declaration_hash(
     plugin_root: str | os.PathLike[str] | None = None,
     platform: str | None = None,
 ) -> str:
+    # Codex hashes the unexpanded hook declaration, then expands runtime variables
+    # only when the hook command is executed. Keep plugin_root for caller compatibility.
+    del plugin_root
     normalized = _normalized_command_handler(
         handler,
-        plugin_root=Path(plugin_root) if plugin_root is not None else None,
         platform=platform,
     )
     if event_label in MATCHERLESS_EVENTS:
@@ -267,7 +264,6 @@ def trust_report(
                     event_label,
                     matcher,
                     handler,
-                    plugin_root=root,
                 )
                 errors = []
                 if state.get("enabled") is False:
