@@ -15,7 +15,7 @@ CONTROL_PATTERN = re.compile(r"%[^%\r\n]+%")
 def configure_stdio() -> None:
     """Use UTF-8 for CLI and hook output, including legacy Windows consoles."""
 
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue

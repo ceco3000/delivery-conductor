@@ -39,7 +39,15 @@ def confirm_with_user(summary: str, token: str) -> tuple[bool, str]:
         return False, "unavailable"
 
     print(summary, file=sys.stderr)
-    typed = input(f"输入 批准 {token} 以确认，其他输入均拒绝: ").strip()
+    try:
+        typed = input(f"输入 批准 {token} 以确认，其他输入均拒绝: ").strip()
+    except (EOFError, OSError):
+        print(
+            "User confirmation is required, but the interactive terminal closed before confirmation. "
+            "Re-run in an interactive terminal (for remote Linux use `ssh -t`).",
+            file=sys.stderr,
+        )
+        return False, "unavailable"
     return typed == f"批准 {token}", "tty"
 
 
